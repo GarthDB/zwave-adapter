@@ -49,6 +49,12 @@ function isZWavePort(port) {
     return true;
   }
 
+  if (port.comName == '/dev/ttyAMA0') {
+    port.vendorId = '0x0147';
+    port.productId = '0x0002';
+    return true;
+  }
+
   return ((port.vendorId == '0658' &&
            port.productId == '0200') ||  // Aeotec Z-Stick Gen-5
           (port.vendorId == '0658' &&
@@ -77,6 +83,7 @@ function findZWavePort(callback) {
       if (port.comName.startsWith('/dev/tty.usb')) {
         port.comName = port.comName.replace('/dev/tty', '/dev/cu');
       }
+      console.log(port.comName);
       if (isZWavePort(port)) {
         callback(null, port);
         return;
