@@ -31,6 +31,7 @@ const BASIC_STR = [
 
 const {
   DEBUG_node,
+  DEBUG_valueId,
 } = require('./zwave-debug');
 const DEBUG = DEBUG_node;
 
@@ -307,22 +308,10 @@ class ZWaveNode extends Device {
     super.notifyPropertyChanged(property);
 
     if (property.hasOwnProperty('updated')) {
-      property.updated();
-    }
-
-    if (this.canSleep) {
-      // For battery powered devices, we want to write out the
-      // configuration whenever a property change occurs. This
-      // ensures that when we start up we'll have the best idea
-      // of the last state. For mains powered devices, we'll get
-      // the information during the scan, so we don't need to
-      // save it here.
-      const valueId = property.valueId;
-      if (valueId) {
-        const zwValue = this.zwValues[valueId];
-        if (zwValue) {
-          this.adapter.writeConfigDeferred();
-        }
+      if (!property.updating) {
+        property.updating = true;
+        property.updated();
+        property.updating = false;
       }
     }
   }
@@ -361,6 +350,58 @@ class ZWaveNode extends Device {
       padRight(this.name, 30)}`;
   }
 
+  performAction(action) {
+    console.log(`node${this.zwInfo.nodeId}`,
+                `Performing action '${action.name}'`);
+
+    if (this.doorLockAction) {
+      return Promise.reject('Lock/Unlock already in progress - ignoring');
+    }
+
+    action.start();
+    switch (action.name) {
+
+      case 'lock': // Start locking the door
+        if (this.doorLockState.value === 'locked') {
+          console.log('Door already locked - ignoring');
+          action.finish();
+          return Promise.resolve();
+        }
+        this.doorLockAction = action;
+        this.doorLockProperty.setValue(true);
+        this.setPropertyValue(this.doorLockState, 'unknown');
+        break;
+
+      case 'unlock':  // Start unlocking the door
+        if (this.doorLockState.value === 'unlocked') {
+          console.log('Door already unlocked - ignoring');
+          action.finish();
+          return Promise.resolve();
+        }
+        this.doorLockAction = action;
+        this.doorLockProperty.setValue(false);
+        this.setPropertyValue(this.doorLockState, 'unknown');
+        break;
+
+      default:
+        action.finish();
+        return Promise.reject(`Unrecognized action: ${action.name}`);
+    }
+
+    if (this.doorLockAction) {
+      this.doorLockTimeout = setTimeout(() => {
+        // We didn't receive any type of status update. Assume jammed.
+        this.setPropertyValue(this.doorLockState, 'jammed');
+        const doorLockAction = this.doorLockAction;
+        if (doorLockAction) {
+          this.doorLockAction = null;
+          doorLockAction.finish();
+        }
+      }, 10000);
+    }
+    return Promise.resolve();
+  }
+
   // Used to set properties which don't have an associated valueId
   setPropertyValue(property, value) {
     property.setCachedValue(value);
@@ -371,6 +412,9 @@ class ZWaveNode extends Device {
   }
 
   zwValueAdded(comClass, zwValue) {
+    if (DEBUG_valueId) {
+      console.log(zwValue);
+    }
     this.lastStatus = 'value-added';
     if (this.zwClasses.indexOf(comClass) < 0) {
       this.zwClasses.push(comClass);
@@ -424,9 +468,23 @@ class ZWaveNode extends Device {
 
     let propertyFound = false;
     this.properties.forEach((property) => {
-      if (property.valueId == zwValue.value_id) {
+      if (property.valueId == zwValue.value_id ||
+          property.valueId2 == zwValue.value_id) {
         propertyFound = true;
-        const [value, logValue] = property.parseZwValue(zwValue.value);
+        let value;
+        let logValue;
+        if (property.valueId2) {
+          // The Aeotect Water leak sensor has 2 instances. We basically
+          // or the results together.
+          const [value1, logValue1] =
+            property.parseZwValue(this.zwValues[property.valueId].value);
+          const [value2, logValue2] =
+            property.parseZwValue(this.zwValues[property.valueId2].value);
+          value = value1 || value2;
+          logValue = `(1:${logValue1} 2:${logValue2})`;
+        } else {
+          [value, logValue] = property.parseZwValue(zwValue.value);
+        }
         property.setCachedValue(value);
         console.log('node%d valueChanged: %s:%s property: %s = %s%s',
                     this.zwInfo.nodeId, zwValue.value_id, zwValue.label,

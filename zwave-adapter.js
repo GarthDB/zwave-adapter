@@ -9,8 +9,11 @@
 
 'use strict';
 
-const path = require('path');
 const fs = require('fs');
+const manifest = require('./manifest.json');
+const mkdirp = require('mkdirp');
+const os = require('os');
+const path = require('path');
 const ZWaveNode = require('./zwave-node');
 const zwaveClassifier = require('./zwave-classifier');
 const {
@@ -23,31 +26,62 @@ const {
   DEBUG_flow,
 } = require('./zwave-debug');
 
+function getDataPath() {
+  let profileDir;
+  if (process.env.hasOwnProperty('MOZIOT_HOME')) {
+    profileDir = process.env.MOZIOT_HOME;
+  } else {
+    profileDir = path.join(os.homedir(), '.mozilla-iot');
+  }
+
+  return path.join(profileDir, 'data', 'zwave-adapter');
+}
+
+function getLogPath() {
+  if (process.env.hasOwnProperty('MOZIOT_HOME')) {
+    return path.join(process.env.MOZIOT_HOME, 'log');
+  }
+
+  return path.join(os.homedir(), '.mozilla-iot', 'log');
+}
+
 class ZWaveAdapter extends Adapter {
-  constructor(addonManager, manifest, zwaveModule, port) {
+  constructor(addonManager, config, zwaveModule, port) {
     // The ZWave adapter supports multiple dongles and
     // will create an adapter object for each dongle.
     // We don't know the actual adapter id until we
     // retrieve the home id from the dongle. So we set the
     // adapter id to zwave-unknown here and fix things up
     // later just before we call addAdapter.
-    super(addonManager, 'zwave-unknown', manifest.name);
-    this.manifest = manifest;
+    super(addonManager, 'zwave-unknown', manifest.id);
+    this.config = config;
     this.port = port;
     this.ready = false;
     this.named = false;
+    this.pairing = false;
+    this.pairingTimeout = false;
+    this.removing = false;
+    this.removeTimeout = null;
 
     this.nodes = {};
     this.nodesBeingAdded = {};
 
-    // Default to current directory.
-    let logDir = '.';
-    if (process.env.hasOwnProperty('MOZIOT_HOME')) {
-      // Check user profile directory.
-      const profileDir = path.join(process.env.MOZIOT_HOME, 'log');
-      if (fs.existsSync(profileDir) &&
-          fs.lstatSync(profileDir).isDirectory()) {
-        logDir = profileDir;
+    const logDir = getDataPath();
+    if (!fs.existsSync(logDir)) {
+      mkdirp.sync(logDir, {mode: 0o755});
+    }
+
+    // move any old config files to the new directory
+    const oldLogDir = getLogPath();
+    if (fs.existsSync(oldLogDir)) {
+      const entries = fs.readdirSync(oldLogDir);
+      for (const entry of entries) {
+        if (entry === 'OZW_Log.txt' || entry === 'zwscene.xml' ||
+            /^ozwcache_0x[A-Fa-f0-9]+\.xml/.test(entry)) {
+          const oldPath = path.join(oldLogDir, entry);
+          const newPath = path.join(logDir, entry);
+          fs.renameSync(oldPath, newPath);
+        }
       }
     }
 
@@ -79,7 +113,7 @@ class ZWaveAdapter extends Adapter {
      * A key can be specified by clicking Configure on this add-on in Gateway.
      */
     /* eslint-enable max-len */
-    const networkKey = this.manifest.moziot.config.networkKey;
+    const networkKey = this.config.networkKey;
 
     if (networkKey) {
       // A regex to validate the required network key format shown above
@@ -157,7 +191,6 @@ class ZWaveAdapter extends Adapter {
     if (node.nodeId > 1) {
       zwaveClassifier.classify(node);
       super.handleDeviceAdded(node);
-      this.writeConfigDeferred();
     }
   }
 
@@ -182,7 +215,6 @@ class ZWaveAdapter extends Adapter {
     console.log('Scan complete');
     this.ready = true;
     this.dump();
-    this.writeConfigDeferred();
   }
 
   nodeAdded(nodeId) {
@@ -265,9 +297,14 @@ class ZWaveAdapter extends Adapter {
 
     const node = this.nodes[nodeId];
     if (node) {
+      if (this.removeTimeout !== null) {
+        clearTimeout(this.removeTimeout);
+        this.removeTimeout = null;
+      }
+
       node.lastStatus = 'removed';
       this.handleDeviceRemoved(node);
-      this.writeConfigDeferred();
+      this.removing = false;
     }
   }
 
@@ -381,42 +418,49 @@ class ZWaveAdapter extends Adapter {
     }
   }
 
-  writeConfig() {
-    console.log('Writing ZWave configuration');
-    this.zwave.writeConfig();
-  }
-
-  writeConfigDeferred() {
-    // In order to reduce the number of times we rewrite the device info
-    // we defer writes for a time.
-    const timeoutSeconds = DEBUG_flow ? 1 : 120;
-
-    if (this.writeConfigTimeout) {
-      // already a timeout setup.
+  startPairing(timeoutSeconds) {
+    if (this.pairing) {
       return;
     }
-    this.writeConfigTimeout = setTimeout(() => {
-      this.writeConfigTimeout = null;
-      this.writeConfig();
-    }, timeoutSeconds * 1000);
-  }
 
-  // eslint-disable-next-line no-unused-vars
-  startPairing(timeoutSeconds) {
+    if (this.removing) {
+      const msg = 'Cannot pair while attempting to remove a device.';
+      console.log(msg);
+      if (this.sendPairingPrompt) {
+        this.sendPairingPrompt(msg);
+      }
+
+      return;
+    }
+
     const msg = 'Press the inclusion button on the ZWave device to add';
     console.log('===============================================');
     console.log(msg);
     console.log('===============================================');
+    this.pairing = true;
     if (this.sendPairingPrompt) {
-      console.log('Sending pairing prompt');
       this.sendPairingPrompt(msg);
     }
-    this.zwave.addNode();
+    const doSecurity = true;  // Will do secure inclusion, if available
+    this.zwave.addNode(doSecurity);
+
+    this.pairingTimeout = setTimeout(
+      this.cancelPairing.bind(this),
+      timeoutSeconds * 1000
+    );
   }
 
   cancelPairing() {
-    console.log('Cancelling pairing mode');
-    this.zwave.cancelControllerCommand();
+    if (this.pairingTimeout !== null) {
+      clearTimeout(this.pairingTimeout);
+      this.pairingTimeout = null;
+    }
+
+    if (this.pairing) {
+      console.log('Cancelling pairing mode');
+      this.zwave.cancelControllerCommand();
+      this.pairing = false;
+    }
   }
 
   /**
@@ -426,23 +470,48 @@ class ZWaveAdapter extends Adapter {
    * @return {Promise} which resolves to the device removed.
    */
   removeThing(device) {
+    if (this.removing) {
+      return;
+    }
+
+    if (this.pairing) {
+      const msg = 'Cannot remove thing while pairing.';
+      console.log(msg);
+      if (this.sendUnpairingPrompt) {
+        this.sendUnpairingPrompt(msg, null, device);
+      }
+
+      return;
+    }
+
     // ZWave can't really remove a particular thing.
     const msg = 'Press the exclusion button on the ZWave device to remove';
     console.log('==================================================');
     console.log(msg);
     console.log('==================================================');
+    this.removing = true;
     if (this.sendUnpairingPrompt) {
-      console.log('Sending unpairing prompt');
       this.sendUnpairingPrompt(msg, null, device);
     }
 
     this.zwave.removeNode();
+
+    // Cancel the removal after 60 seconds. If the node is properly removed,
+    // the timeout will be cancelled in nodeRemoved().
+    this.removeTimeout = setTimeout(this.cancelRemoveThing.bind(this), 30000);
   }
 
-  // eslint-disable-next-line no-unused-vars
-  cancelRemoveThing(node) {
-    console.log('Cancelling remove mode');
-    this.zwave.cancelControllerCommand();
+  cancelRemoveThing() {
+    if (this.removeTimeout !== null) {
+      clearTimeout(this.removeTimeout);
+      this.removeTimeout = null;
+    }
+
+    if (this.removing) {
+      console.log('Cancelling remove mode');
+      this.zwave.cancelControllerCommand();
+      this.removing = false;
+    }
   }
 
   unload() {

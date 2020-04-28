@@ -1,12 +1,13 @@
 {
   "name": "zwave-adapter",
   "display_name": "Z-Wave",
-  "version": "0.7.2",
+  "version": "0.10.5",
   "description": "Z-Wave adapter plugin for Mozilla WebThings Gateway",
   "author": "Mozilla IoT",
   "main": "index.js",
   "scripts": {
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "jest": "jest"
   },
   "keywords": [
     "mozilla",
@@ -24,19 +25,22 @@
     "url": "https://github.com/mozilla-iot/zwave-adapter/issues"
   },
   "dependencies": {
-    "color": "^3.0.0",
-    "openzwave-shared": "^1.4.6",
-    "serialport": "^7.0.2"
+    "color": "^3.1.2",
+    "mkdirp": "^0.5.1",
+    "openzwave-shared": "^1.6.2",
+    "serialport": "^8.0.7"
   },
   "devDependencies": {
-    "babel-eslint": "^10.0.1",
-    "eslint": "^5.12.1",
-    "eslint-plugin-html": "^5.0.0"
+    "babel-eslint": "^10.1.0",
+    "eslint": "^6.8.0",
+    "gateway-addon": "https://github.com/mozilla-iot/gateway-addon-node",
+    "jest": "^25.1.0"
   },
   "files": [
     "LICENSE",
     "SHA256SUMS",
     "index.js",
+    "manifest.json",
     "package.json",
     "zwave-adapter.js",
     "zwave-classifier.js",
@@ -71,5 +75,15 @@
         }
       }
     }
+  },
+  "jest": {
+    "coverageDirectory": "./coverage/",
+    "moduleFileExtensions": [
+      "js"
+    ],
+    "testMatch": [
+      "**/test/**/*-test.js"
+    ],
+    "testEnvironment": "node"
   }
 }

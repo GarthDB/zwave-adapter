@@ -10,9 +10,8 @@
 
 'use strict';
 
-const child_process = require('child_process');
 const {Database} = require('gateway-addon');
-const path = require('path');
+const manifest = require('./manifest.json');
 const SerialPort = require('serialport');
 
 function isZWavePort(port) {
@@ -71,10 +70,7 @@ function isZWavePort(port) {
 //        Upon failure, callback is invoked as callback(err) instead.
 //
 function findZWavePort(callback) {
-  SerialPort.list(function listPortsCallback(error, ports) {
-    if (error) {
-      callback(error);
-    }
+  SerialPort.list().then((ports) => {
     for (const port of ports) {
       // Under OSX, SerialPort.list returns the /dev/tty.usbXXX instead
       // /dev/cu.usbXXX. tty.usbXXX requires DCD to be asserted which
@@ -89,32 +85,31 @@ function findZWavePort(callback) {
         return;
       }
     }
+
     callback('No ZWave port found');
+  }).catch((error) => {
+    callback(error);
   });
 }
 
-async function loadZWaveAdapters(addonManager, manifest, errorCallback) {
-  let promise;
-  if (Database) {
-    const db = new Database(manifest.name);
-    promise = db.open().then(() => {
-      return db.loadConfig();
-    }).then((config) => {
-      if (config.hasOwnProperty('debug')) {
-        console.log(`DEBUG config = '${config.debug}'`);
-        require('./zwave-debug').set(config.debug);
-      }
+async function loadZWaveAdapters(addonManager, _, errorCallback) {
+  let config = {};
+  const db = new Database(manifest.id);
+  await db.open().then(() => {
+    return db.loadConfig();
+  }).then((cfg) => {
+    config = cfg;
 
-      manifest.moziot.config = config;
-      return db.saveConfig(config);
-    }).then(() => {
-      console.log('Closing database');
-      db.close();
-    });
-  } else {
-    promise = Promise.resolve();
-  }
-  await promise;
+    if (config.hasOwnProperty('debug')) {
+      console.log(`DEBUG config = '${config.debug}'`);
+      require('./zwave-debug').set(config.debug);
+    }
+
+    return db.saveConfig(config);
+  }).then(() => {
+    console.log('Closing database');
+    db.close();
+  });
 
   // We put the ZWaveAdapter require here rather then at the top of the
   // file so that the debug config gets initialized before we import
@@ -128,19 +123,19 @@ async function loadZWaveAdapters(addonManager, manifest, errorCallback) {
   try {
     zwaveModule = require('openzwave-shared');
   } catch (err) {
-    errorCallback(manifest.name, `Failed to load openzwave-shared: ${err}`);
+    errorCallback(manifest.id, `Failed to load openzwave-shared: ${err}`);
     return;
   }
 
   findZWavePort(function(error, port) {
     if (error) {
-      errorCallback(manifest.name, 'Unable to find ZWave adapter');
+      errorCallback(manifest.id, 'Unable to find ZWave adapter');
       return;
     }
 
     console.log('Found ZWave port @', port.comName);
 
-    new ZWaveAdapter(addonManager, manifest, zwaveModule, port);
+    new ZWaveAdapter(addonManager, config, zwaveModule, port);
 
     // The zwave adapter will be added when it's driverReady method is called.
     // Prior to that we don't know what the homeID of the adapter is.

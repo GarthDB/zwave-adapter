@@ -107,6 +107,16 @@ class ZWaveProperty extends Property {
     return ['', `valueId: ${this.valueId} not found - using ''`];
   }
 
+  parseRRGGBBWWCWColorValue(zwData) {
+    if (typeof this.value !== 'undefined') {
+      // The Aeotec LED Strip never returns the value that was set
+      // so we set fireAndForget to true (in the classifier) and ignore
+      // updates.
+      zwData = this.value;
+    }
+    return [zwData, zwData];
+  }
+
   parseConfigRGBXZwValue(zwData) {
     const red = (zwData >> 24) & 0xff;
     const green = (zwData >> 16) & 0xff;
@@ -146,8 +156,56 @@ class ZWaveProperty extends Property {
     ];
   }
 
+  // Convert a boolean into a LockedProperty
+  parseZwDoorLocked(zwData) {
+    const value = zwData ? 'unlocked' : 'locked';
+    return [value, `${value} zw: zwData`];
+  }
+
+  parseZwStringToLowerCase(zwData) {
+    const value = zwData.toString().toLowerCase();
+    return [value, `${value} zw: ${zwData}`];
+  }
+
+  parseTemperatureZwValue(zwData) {
+    const zwValue = this.device.zwValues[this.valueId];
+    if (zwValue.units === 'F') {
+      return [(zwData - 32) / 1.8, `zw: ${zwData} F`];
+    }
+    return [zwData, `zw: ${zwData} C`];
+  }
+
   parseZwValue(zwData) {
     return this.parseValueFromZwValue(zwData);
+  }
+
+  parseZwValueListMap(zwData) {
+    let value = false;
+    const zwValue = this.device.zwValues[this.valueId];
+    if (zwValue && zwValue.hasOwnProperty('values')) {
+      const valueIdx = zwValue.values.indexOf(zwData);
+      if (valueIdx >= 0 &&
+          this.hasOwnProperty('valueListMap') &&
+          valueIdx < this.valueListMap.length) {
+        value = this.valueListMap[valueIdx];
+      }
+    }
+    return [value, `${value} zw:${zwData}`];
+  }
+
+  parseZwValueMap(zwData) {
+    let value = false;
+    const zwValue = this.device.zwValues[this.valueId];
+    if (zwValue && this.hasOwnProperty('valueMap')) {
+      if (zwData.startsWith(this.valueMap[1])) {
+        value = true;
+      }
+    }
+    return [value, `${value} zw:${zwData}`];
+  }
+
+  setRRGGBBWWCWColorValue(value) {
+    return [value, value];
   }
 
   setConfigListValue(value) {
@@ -176,6 +234,29 @@ class ZWaveProperty extends Property {
   setIdentityValue(propertyValue) {
     const zwData = propertyValue;
     return [zwData, zwData.toString()];
+  }
+
+  setLowerCaseValue(value) {
+    value = value.toLowerCase();
+    const zwValue = this.device.zwValues[this.valueId];
+    if (!zwValue || !zwValue.values) {
+      return [value, value.toString()];
+    }
+    const idx = this.lowerCaseValues.indexOf(value);
+    if (idx < 0) {
+      return [value, value.toString()];
+    }
+    const zwData = zwValue.values[idx];
+    return [zwData, `${value} zw: ${zwData}`];
+  }
+
+  setTemperatureValue(value) {
+    const zwValue = this.device.zwValues[this.valueId];
+    if (zwValue.units === 'F') {
+      const zwData = value * 1.8 + 32;
+      return [zwData, `${value}C zw:${zwData}F`];
+    }
+    return [value, `${value}C zw:${value}C`];
   }
 
   /**
@@ -237,13 +318,14 @@ class ZWaveProperty extends Property {
     }
 
     if (!this.valueId) {
-      deferredSet.reject(
-        `setProperty property ${this.name} for node ${this.device.id
-        } doesn't have a valueId`);
+      // This happens for "fake" properties which interact with real
+      // properties.
+      this.setCachedValue(propertyValue);
+      this.device.notifyPropertyChanged(this);
       return deferredSet.promise;
     }
-    const zwValue = this.device.zwValues[this.valueId];
 
+    const zwValue = this.device.zwValues[this.valueId];
     if (zwValue.read_only) {
       deferredSet.reject(
         `setProperty property ${this.name} for node ${this.device.id
@@ -284,6 +366,9 @@ class ZWaveProperty extends Property {
       this.device.adapter.zwave.setValue(zwValue.node_id, zwValue.class_id,
                                          zwValue.instance, zwValue.index,
                                          zwValueData);
+      if (this.fireAndForget) {
+        this.device.notifyPropertyChanged(this);
+      }
     }
     return deferredSet.promise;
   }
