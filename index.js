@@ -29,9 +29,9 @@ function isZWavePort(port) {
    */
   const isHUSBZB1 = port.vendorId == '10c4' && port.productId == '8a2a';
   if (isHUSBZB1) {
-    const isGoControl = port.comName.indexOf('GoControl') >= 0;
+    const isGoControl = port.path.indexOf('GoControl') >= 0;
     if (isGoControl) {
-      return port.comName.indexOf('zwave') >= 0;
+      return port.path.indexOf('zwave') >= 0;
     }
 
     /**
@@ -48,9 +48,9 @@ function isZWavePort(port) {
     return true;
   }
 
-  if (port.comName == '/dev/ttyAMA0') {
-    port.vendorId = '0x0147';
-    port.productId = '0x0002';
+  if (port.path == '/dev/ttyAMA0') {
+    port.vendorId = '0147';
+    port.productId = '0002';
     return true;
   }
 
@@ -76,10 +76,10 @@ function findZWavePort(callback) {
       // /dev/cu.usbXXX. tty.usbXXX requires DCD to be asserted which
       // isn't necessarily the case for ZWave dongles. The cu.usbXXX
       // doesn't care about DCD.
-      if (port.comName.startsWith('/dev/tty.usb')) {
-        port.comName = port.comName.replace('/dev/tty', '/dev/cu');
+      if (port.path.startsWith('/dev/tty.usb')) {
+        port.path = port.path.replace('/dev/tty', '/dev/cu');
       }
-      console.log(port.comName);
+      console.log(port.path);
       if (isZWavePort(port)) {
         callback(null, port);
         return;
@@ -133,7 +133,8 @@ async function loadZWaveAdapters(addonManager, _, errorCallback) {
       return;
     }
 
-    console.log('Found ZWave port @', port.comName);
+    console.log('Found ZWave port @', port.path);
+    console.log(port)
 
     new ZWaveAdapter(addonManager, config, zwaveModule, port);
 
